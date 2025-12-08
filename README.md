@@ -149,29 +149,23 @@ The system ensures fair rotation distribution, accurate tracking, and seamless s
 
 ## 📸 Screenshots
 
-> Replace the image paths with your actual file names once you capture the screenshots (e.g. store them under `docs/images/`).
 
-```md
 ### Dashboard – Who’s On Call Now
-
 ![Dashboard – Who's On Call Now](docs/images/dashboard-oncall-now.png)
 
 ### Generate Schedule – Auto Rotation
-
 ![Generate Schedule](docs/images/generate-schedule.png)
 
 ### Team Schedule Calendar – Load & Edit
-
 ![Team Schedule Calendar](docs/images/team-schedule-calendar.png)
 
 ### People Management – On-Call Participants
-
 ![People Management](docs/images/people-admin.png)
 
 ### PTO Admin – Time Off & Coverage
-
 ![PTO Admin](docs/images/pto-admin.png)
-```
+
+
 
 ---
 
