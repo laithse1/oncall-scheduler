@@ -1,4 +1,5 @@
 
+from sqlite3 import IntegrityError
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 from sqlalchemy.orm import Session
@@ -72,3 +73,20 @@ def get_team_oncall_now(team_id: int, db: Session = Depends(get_db)):
         secondary_person=PersonRead.model_validate(secondary) if secondary else None,
     )
 
+@router.delete("/{team_id}", status_code=204)
+def delete_team(team_id: int, db: Session = Depends(get_db)):
+    """
+    Delete a team. If it still has schedules or other references,
+    DB constraints will block and we return 400.
+    """
+    repo = TeamsRepositoryDB(db)
+    try:
+        deleted = repo.delete(team_id)
+    except IntegrityError:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete team that still has schedules or references.",
+        )
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Team not found")

@@ -1,8 +1,10 @@
 from typing import List, Optional, Dict, Set
 from datetime import date, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import select, delete
-from .models_db import Person, Team, TeamMembership, ScheduleDefinition, OnCallSlot, PTO
+from sqlalchemy import select, delete,or_
+from sqlalchemy.exc import IntegrityError
+from .models_db import Person, Team, TeamMembership, PTO, ScheduleDefinition, OnCallSlot
+
 from .schemas import (
     PersonCreate,
     PersonRead,
@@ -31,6 +33,67 @@ class PeopleRepositoryDB:
 
     def get(self, person_id: int) -> Optional[Person]:
         return self.db.get(Person, person_id)
+
+    #  usage helper used by both API and delete
+    def get_usage(self, person_id: int) -> Optional[dict]:
+        person = self.db.get(Person, person_id)
+        if not person:
+            return None
+
+        pto_count = (
+            self.db.query(PTO)
+            .filter(PTO.person_id == person_id)
+            .count()
+        )
+
+        primary_slots = (
+            self.db.query(OnCallSlot)
+            .filter(OnCallSlot.primary_person_id == person_id)
+            .count()
+        )
+
+        secondary_slots = (
+            self.db.query(OnCallSlot)
+            .filter(OnCallSlot.secondary_person_id == person_id)
+            .count()
+        )
+
+        return {
+            "person_id": person_id,
+            "pto_count": pto_count,
+            "primary_slots": primary_slots,
+            "secondary_slots": secondary_slots,
+            "total_slots": primary_slots + secondary_slots,
+        }
+
+    #  single delete implementation
+    def delete(self, person_id: int) -> bool:
+        usage = self.get_usage(person_id)
+        if usage is None:
+            return False
+
+        # Block delete if there is PTO or any schedule usage
+        if usage["pto_count"] > 0 or usage["total_slots"] > 0:
+            return False
+
+        person = self.db.get(Person, person_id)
+        if not person:
+            return False
+
+        # Remove team memberships (safe regardless)
+        self.db.query(TeamMembership).filter(
+            TeamMembership.person_id == person_id
+        ).delete(synchronize_session=False)
+
+        try:
+            self.db.delete(person)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return True
+
 
 # ----- Teams -----
 class TeamsRepositoryDB:
@@ -85,6 +148,52 @@ class TeamsRepositoryDB:
             description=team.description,
             member_ids=[m.person_id for m in team.memberships],
         )
+    def delete(self, team_id: int) -> bool:
+        """Delete a team and all data that *must* belong to it.
+
+        - Remove OnCallSlot rows for schedules owned by this team
+        - Remove ScheduleDefinition rows for this team
+        - Remove TeamMembership rows
+        - Finally remove the Team row
+        """
+        team = self.db.get(Team, team_id)
+        if not team:
+            return False
+
+        # 1) Find all schedules belonging to this team
+        schedules = (
+            self.db.query(ScheduleDefinition)
+            .filter(ScheduleDefinition.team_id == team_id)
+            .all()
+        )
+
+        # 2) Delete slots for those schedules
+        for sched in schedules:
+            (
+                self.db.query(OnCallSlot)
+                .filter(OnCallSlot.schedule_id == sched.id)
+                .delete(synchronize_session=False)
+            )
+
+        # 3) Delete the schedules themselves
+        (
+            self.db.query(ScheduleDefinition)
+            .filter(ScheduleDefinition.team_id == team_id)
+            .delete(synchronize_session=False)
+        )
+
+        # 4) Delete team memberships
+        (
+            self.db.query(TeamMembership)
+            .filter(TeamMembership.team_id == team_id)
+            .delete(synchronize_session=False)
+        )
+
+        # 5) Delete the team record
+        self.db.delete(team)
+
+        self.db.commit()
+        return True
 
 # ----- PTO -----
 class PTORepositoryDB:
@@ -186,6 +295,21 @@ class SchedulesRepositoryDB:
             return []
         # already ordered by slot due to UniqueConstraint semantics in practice
         return sorted(sched.slots, key=lambda s: s.slot)
+    
+    def delete_schedule(self, schedule_id: int) -> bool:
+        definition = self.db.get(ScheduleDefinition, schedule_id)
+        if not definition:
+            return False
+
+        # Delete slots first, then the schedule definition
+        (
+            self.db.query(OnCallSlot)
+            .filter(OnCallSlot.schedule_id == schedule_id)
+            .delete()
+        )
+        self.db.delete(definition)
+        self.db.commit()
+        return True
 
     def apply_override(
         self,
@@ -345,3 +469,5 @@ class SchedulesRepositoryDB:
             .order_by(ScheduleDefinition.id.desc())
             .first()
         )
+
+    

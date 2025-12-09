@@ -38,3 +38,13 @@ export async function apiPut<T>(path: string, body: any): Promise<T> {
   });
   return handle<T>(res, "PUT", path);
 }
+
+export async function apiDelete(path: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+}

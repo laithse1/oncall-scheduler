@@ -96,3 +96,5 @@ def generate_oncall_slots(
         current_start = current_end + timedelta(days=1)
 
     return slots
+
+

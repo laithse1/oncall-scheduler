@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost } from "@/lib/api";
+import { apiGet, apiDelete } from "@/lib/api";
 
 interface Team {
   id: number;
@@ -42,9 +42,7 @@ export default function CalendarPage() {
   const [schedule, setSchedule] = useState<ScheduleResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-
-  const [editError, setEditError] = useState<string | null>(null);
-  const [editMessage, setEditMessage] = useState<string | null>(null);
+  const [deletingSchedule, setDeletingSchedule] = useState(false);
 
   const personNameById = useMemo(() => {
     const map: Record<number, string> = {};
@@ -75,8 +73,6 @@ export default function CalendarPage() {
     if (teamId === "") return;
     setLoading(true);
     setError(null);
-    setEditError(null);
-    setEditMessage(null);
     try {
       const result = await apiGet<ScheduleResponse>(
         `/schedules/teams/${teamId}?year=${year}`
@@ -90,59 +86,26 @@ export default function CalendarPage() {
     }
   }
 
-  // ---- NEW: use existing override endpoint to edit a slot ----
-  async function updateSlot(
-    slotNumber: number,
-    primaryId: number | null | undefined,
-    secondaryId: number | null | undefined,
-    notes: string | null | undefined
-  ) {
+  async function handleDeleteSchedule() {
     if (!schedule) return;
-    setEditError(null);
-    setEditMessage(null);
+    const id = schedule.schedule.id;
+
+    const confirmed = window.confirm(
+      `Delete schedule #${id} for team ${schedule.schedule.team_id} (${schedule.schedule.year})?\n\n` +
+        "This will remove all on-call slots for this schedule and cannot be undone."
+    );
+    if (!confirmed) return;
+
+    setDeletingSchedule(true);
+    setError(null);
     try {
-      await apiPost(`/schedules/${schedule.schedule.id}/override`, {
-        slot: slotNumber,
-        primary_person_id: primaryId ?? null,
-        secondary_person_id: secondaryId ?? null,
-        notes: notes ?? null,
-      });
-      const refreshed = await apiGet<ScheduleResponse>(
-        `/schedules/${schedule.schedule.id}`
-      );
-      setSchedule(refreshed);
-      setEditMessage(`Updated slot #${slotNumber}.`);
+      await apiDelete(`/schedules/${id}`);
+      setSchedule(null);
     } catch (e: any) {
-      setEditError(e.message ?? String(e));
+      setError(e.message ?? String(e));
+    } finally {
+      setDeletingSchedule(false);
     }
-  }
-
-  function handleChangePrimary(slotNumber: number, value: string) {
-    if (!schedule) return;
-    const newPrimary = value ? Number(value) : null;
-    const slot = schedule.slots.find((s) => s.slot === slotNumber);
-    if (!slot) return;
-    updateSlot(slotNumber, newPrimary, slot.secondary_person_id, slot.notes);
-  }
-
-  function handleChangeSecondary(slotNumber: number, value: string) {
-    if (!schedule) return;
-    const newSecondary = value ? Number(value) : null;
-    const slot = schedule.slots.find((s) => s.slot === slotNumber);
-    if (!slot) return;
-    updateSlot(slotNumber, slot.primary_person_id, newSecondary, slot.notes);
-  }
-
-  function handleEditNotes(slotNumber: number) {
-    if (!schedule) return;
-    const slot = schedule.slots.find((s) => s.slot === slotNumber);
-    if (!slot) return;
-    const current = slot.notes ?? "";
-    const updated = window.prompt(`Edit notes for slot #${slotNumber}:`, current);
-    if (updated === null) {
-      return; // user cancelled
-    }
-    updateSlot(slotNumber, slot.primary_person_id, slot.secondary_person_id, updated);
   }
 
   return (
@@ -185,23 +148,41 @@ export default function CalendarPage() {
         </button>
       </form>
 
-      {error && <p style={{ color: "red" }}>{error}</p>}
-      {editError && <p style={{ color: "red" }}>{editError}</p>}
-      {editMessage && <p style={{ color: "green" }}>{editMessage}</p>}
+      {error && <p style={{ color: "salmon" }}>{error}</p>}
 
       {schedule && (
         <>
-          <h2>
-            Schedule #{schedule.schedule.id} (Team {schedule.schedule.team_id},{" "}
-            {schedule.schedule.year})
-          </h2>
-          <p>
-            Rotation: {schedule.schedule.rotation_days}-day blocks. Week starts
-            on{" "}
-            {schedule.schedule.week_starts_on === 0 ? "Monday" : "Sunday"}.
-          </p>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 16,
+            }}
+          >
+            <div>
+              <h2>
+                Schedule #{schedule.schedule.id} (Team{" "}
+                {schedule.schedule.team_id}, {schedule.schedule.year})
+              </h2>
+              <p>
+                Rotation: {schedule.schedule.rotation_days}-day blocks. Week
+                starts on{" "}
+                {schedule.schedule.week_starts_on === 0 ? "Monday" : "Sunday"}.
+              </p>
+            </div>
 
-          <table border={1} cellPadding={4} style={{ marginTop: 12 }}>
+            <button
+              type="button"
+              className="danger-button"
+              onClick={handleDeleteSchedule}
+              disabled={deletingSchedule}
+            >
+              {deletingSchedule ? "Deleting..." : "Delete Schedule"}
+            </button>
+          </div>
+
+          <table border={1} cellPadding={4} style={{ marginTop: 12, width: "100%" }}>
             <thead>
               <tr>
                 <th>Slot</th>
@@ -210,7 +191,6 @@ export default function CalendarPage() {
                 <th>Start</th>
                 <th>End</th>
                 <th>Notes</th>
-                <th>Edit Notes</th>
               </tr>
             </thead>
             <tbody>
@@ -223,54 +203,14 @@ export default function CalendarPage() {
                     ? personNameById[s.secondary_person_id] ??
                       `ID ${s.secondary_person_id}`
                     : "";
-
                 return (
                   <tr key={s.slot}>
                     <td>{s.slot}</td>
-                    <td>
-                      <select
-                        value={s.primary_person_id}
-                        onChange={(e) =>
-                          handleChangePrimary(s.slot, e.target.value)
-                        }
-                      >
-                        {people.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <select
-                        value={
-                          s.secondary_person_id != null
-                            ? String(s.secondary_person_id)
-                            : ""
-                        }
-                        onChange={(e) =>
-                          handleChangeSecondary(s.slot, e.target.value)
-                        }
-                      >
-                        <option value="">(none)</option>
-                        {people.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
+                    <td>{primaryName}</td>
+                    <td>{secondaryName}</td>
                     <td>{s.start}</td>
                     <td>{s.end}</td>
                     <td>{s.notes ?? ""}</td>
-                    <td>
-                      <button
-                        type="button"
-                        onClick={() => handleEditNotes(s.slot)}
-                      >
-                        Edit
-                      </button>
-                    </td>
                   </tr>
                 );
               })}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiGet, apiPost, apiPut } from "@/lib/api";
+import { apiGet, apiPost, apiPut, apiDelete } from "@/lib/api";
 
 interface Person {
   id: number;
@@ -130,6 +130,46 @@ export default function TeamsPage() {
     }
   }
 
+  async function removeMember(personId: number) {
+    if (!selectedTeamId) return;
+    const updated = memberIds.filter((id) => id !== personId);
+    setMemberIds(updated);
+    setSavingMembers(true);
+    setError(null);
+    try {
+      await apiPut(`/teams/${selectedTeamId}/members`, {
+        member_ids: updated,
+      });
+    } catch (e: any) {
+      setError(e.message ?? String(e));
+    } finally {
+      setSavingMembers(false);
+    }
+  }
+
+  async function handleDeleteTeam(id: number) {
+    if (
+      !window.confirm(
+        "Delete this team? This may fail if it still has schedules or other references."
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await apiDelete(`/teams/${id}`);
+      setTeams((prev) => prev.filter((t) => t.id !== id));
+      if (selectedTeamId === id) {
+        setSelectedTeamId(null);
+        setSelectedTeam(null);
+        setMemberIds([]);
+        setOncall(null);
+      }
+    } catch (e: any) {
+      setError(e.message ?? String(e));
+    }
+  }
+
   return (
     <div>
       <h1>Teams</h1>
@@ -161,11 +201,29 @@ export default function TeamsPage() {
 
           <h2 style={{ marginTop: 24 }}>Teams</h2>
           {teams.length === 0 && <p>No teams yet.</p>}
-          <ul>
+          <ul style={{ listStyle: "none", paddingLeft: 0 }}>
             {teams.map((t) => (
-              <li key={t.id}>
+              <li
+                key={t.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  marginBottom: 4,
+                }}
+              >
                 <button type="button" onClick={() => loadTeam(t.id)}>
+                  View
+                </button>
+                <span>
                   {t.name} (id {t.id})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteTeam(t.id)}
+                  style={{ marginLeft: "auto" }}
+                >
+                  Delete
                 </button>
               </li>
             ))}
@@ -191,21 +249,46 @@ export default function TeamsPage() {
                 }}
               >
                 {people.length === 0 && <p>No people defined.</p>}
-                {people.map((p) => (
-                  <label
-                    key={p.id}
-                    style={{ display: "flex", gap: 8, alignItems: "center" }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={memberIds.includes(p.id)}
-                      onChange={() => toggleMember(p.id)}
-                    />
-                    <span>
-                      {p.name} (id {p.id})
-                    </span>
-                  </label>
-                ))}
+                {people.map((p) => {
+                  const isMember = memberIds.includes(p.id);
+                  return (
+                    <div
+                      key={p.id}
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "center",
+                        marginBottom: 4,
+                      }}
+                    >
+                      <label
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          alignItems: "center",
+                          flex: 1,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isMember}
+                          onChange={() => toggleMember(p.id)}
+                        />
+                        <span>
+                          {p.name} (id {p.id})
+                        </span>
+                      </label>
+                      {isMember && (
+                        <button
+                          type="button"
+                          onClick={() => removeMember(p.id)}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               <button
                 type="button"

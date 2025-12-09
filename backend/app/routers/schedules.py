@@ -271,3 +271,10 @@ def get_schedule_for_team(
         schedule=ScheduleDefinitionRead.model_validate(schedule),
         slots=[OnCallSlotRead.model_validate(s) for s in slots],
     )
+
+@router.delete("/{schedule_id}", status_code=204)
+def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
+    repo = SchedulesRepositoryDB(db)
+    deleted = repo.delete_schedule(schedule_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Schedule not found")

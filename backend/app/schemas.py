@@ -101,3 +101,14 @@ class OnCallNowResponse(BaseModel):
     slot: OnCallSlotRead
     primary_person: PersonRead
     secondary_person: Optional[PersonRead] = None
+
+class PersonUsage(BaseModel):
+    person_id: int
+    pto_count: int
+    primary_slots: int
+    secondary_slots: int
+
+    @property
+    def total_slots(self) -> int:
+        return self.primary_slots + self.secondary_slots
+

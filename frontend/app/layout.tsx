@@ -1,7 +1,15 @@
 // frontend/app/layout.tsx
 import "./globals.css";           // 🔹 <-- only change: use the existing file
 import type { ReactNode } from "react";
+import type { Metadata } from "next";
 import Link from "next/link";
+
+export const metadata: Metadata = {
+  title: "On-call Scheduler",
+  icons: {
+    icon: "/favicon.ico", // this points to frontend/public/favicon.ico
+  },
+};
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
