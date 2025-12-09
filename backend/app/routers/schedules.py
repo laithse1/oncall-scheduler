@@ -5,6 +5,9 @@ from datetime import date
 import csv
 from io import StringIO
 
+from pydantic import BaseModel
+from typing import Literal
+
 from ..db import get_db
 from ..repositories_db import SchedulesRepositoryDB, PTORepositoryDB, TeamsRepositoryDB
 from ..models_db import ScheduleDefinition, OnCallSlot, Person
@@ -14,8 +17,12 @@ from ..schemas import (
     ScheduleRead,
     OnCallSlotRead,
     OverrideRequest,
+    SchedulePersonUsage, 
+    BulkReassignRequest,
+    PersonUsage,
 )
 from ..scheduler import first_week_start_of_year
+
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
@@ -278,3 +285,37 @@ def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
     deleted = repo.delete_schedule(schedule_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    
+@router.get("/{schedule_id}/person-usage", response_model=SchedulePersonUsage)
+def get_schedule_person_usage(
+    schedule_id: int,
+    person_id: int,
+    db: Session = Depends(get_db),
+):
+    repo = SchedulesRepositoryDB(db)
+    return repo.person_usage(schedule_id, person_id)
+
+@router.post("/{schedule_id}/bulk-reassign", status_code=204)
+def bulk_reassign(
+    schedule_id: int,
+    body: BulkReassignRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Reassign all occurrences of from_person_id to to_person_id
+    within this schedule (primary, secondary, or both).
+    """
+    repo = SchedulesRepositoryDB(db)
+    repo.bulk_reassign(schedule_id, body)
+    return  # 204 No Content
+
+@router.delete("/{schedule_id}/remove-person/{person_id}", status_code=204)
+def remove_person_from_schedule(
+    schedule_id: int,
+    person_id: int,
+    db: Session = Depends(get_db),
+):
+    repo = SchedulesRepositoryDB(db)
+    repo.remove_person(schedule_id, person_id)
+    return Response(status_code=204)
+

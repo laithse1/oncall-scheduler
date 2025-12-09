@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { apiGet, apiDelete } from "@/lib/api";
+import { apiGet, apiDelete, apiPost } from "@/lib/api";
 
 interface Team {
   id: number;
@@ -34,6 +34,8 @@ interface ScheduleResponse {
   slots: Slot[];
 }
 
+type BulkScope = "primary" | "secondary" | "both";
+
 export default function CalendarPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
@@ -44,6 +46,14 @@ export default function CalendarPage() {
   const [loading, setLoading] = useState(false);
   const [deletingSchedule, setDeletingSchedule] = useState(false);
 
+  // "Who's on this schedule?" + bulk reassign state
+  const [showUsage, setShowUsage] = useState(true);
+  const [bulkFromId, setBulkFromId] = useState<number | "">("");
+  const [bulkToId, setBulkToId] = useState<number | "">("");
+  const [bulkScope, setBulkScope] = useState<BulkScope>("both");
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null);
+
   const personNameById = useMemo(() => {
     const map: Record<number, string> = {};
     people.forEach((p) => {
@@ -51,6 +61,41 @@ export default function CalendarPage() {
     });
     return map;
   }, [people]);
+
+  // Aggregate usage per person for current schedule
+  const scheduleUsage = useMemo(() => {
+    if (!schedule) return [];
+
+    const counts: Record<
+      number,
+      { personId: number; primary: number; secondary: number }
+    > = {};
+
+    for (const slot of schedule.slots) {
+      if (slot.primary_person_id != null) {
+        const pId = slot.primary_person_id;
+        if (!counts[pId])
+          counts[pId] = { personId: pId, primary: 0, secondary: 0 };
+        counts[pId].primary += 1;
+      }
+      if (slot.secondary_person_id != null) {
+        const sId = slot.secondary_person_id;
+        if (!counts[sId])
+          counts[sId] = { personId: sId, primary: 0, secondary: 0 };
+        counts[sId].secondary += 1;
+      }
+    }
+
+    return Object.values(counts)
+      .map((c) => ({
+        personId: c.personId,
+        name: personNameById[c.personId] ?? `ID ${c.personId}`,
+        primary: c.primary,
+        secondary: c.secondary,
+        total: c.primary + c.secondary,
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [schedule, personNameById]);
 
   useEffect(() => {
     async function load() {
@@ -73,17 +118,31 @@ export default function CalendarPage() {
     if (teamId === "") return;
     setLoading(true);
     setError(null);
+    setBulkMessage(null);
     try {
       const result = await apiGet<ScheduleResponse>(
         `/schedules/teams/${teamId}?year=${year}`
       );
       setSchedule(result);
+      // reset bulk form when switching schedules
+      setBulkFromId("");
+      setBulkToId("");
+      setBulkScope("both");
     } catch (e: any) {
       setError(e.message ?? String(e));
       setSchedule(null);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function reloadCurrentSchedule() {
+    if (!schedule) return;
+    const { team_id, year } = schedule.schedule;
+    const refreshed = await apiGet<ScheduleResponse>(
+      `/schedules/teams/${team_id}?year=${year}`
+    );
+    setSchedule(refreshed);
   }
 
   async function handleDeleteSchedule() {
@@ -98,6 +157,7 @@ export default function CalendarPage() {
 
     setDeletingSchedule(true);
     setError(null);
+    setBulkMessage(null);
     try {
       await apiDelete(`/schedules/${id}`);
       setSchedule(null);
@@ -105,6 +165,60 @@ export default function CalendarPage() {
       setError(e.message ?? String(e));
     } finally {
       setDeletingSchedule(false);
+    }
+  }
+
+  async function handleBulkReassign(e: React.FormEvent) {
+    e.preventDefault();
+    if (!schedule || bulkFromId === "" || bulkToId === "") return;
+
+    if (bulkFromId === bulkToId) {
+      setError("From and To person must be different.");
+      return;
+    }
+
+    setBulkLoading(true);
+    setError(null);
+    setBulkMessage(null);
+
+    try {
+      await apiPost(`/schedules/${schedule.schedule.id}/bulk-reassign`, {
+        from_person_id: bulkFromId,
+        to_person_id: bulkToId,
+        scope: bulkScope,
+      });
+
+      setBulkMessage("Slots reassigned successfully.");
+      await reloadCurrentSchedule();
+    } catch (e: any) {
+      setError(e.message ?? String(e));
+    } finally {
+      setBulkLoading(false);
+    }
+  }
+
+  // 🔥 NEW: remove a person completely from this schedule (primary + secondary + PTO for this schedule)
+  async function handleRemovePersonFromSchedule(personId: number) {
+    if (!schedule) return;
+
+    const name = personNameById[personId] ?? `ID ${personId}`;
+    const confirmed = window.confirm(
+      `Remove ${name} from ALL primary/secondary slots in schedule #${schedule.schedule.id} for team ${schedule.schedule.team_id} (${schedule.schedule.year})?\n\n` +
+        "This will clear their assignments from this schedule. This action cannot be undone."
+    );
+    if (!confirmed) return;
+
+    setError(null);
+    setBulkMessage(null);
+
+    try {
+      await apiDelete(
+        `/schedules/${schedule.schedule.id}/remove-person/${personId}`
+      );
+      setBulkMessage(`Removed ${name} from this schedule.`);
+      await reloadCurrentSchedule();
+    } catch (e: any) {
+      setError(e.message ?? String(e));
     }
   }
 
@@ -149,6 +263,7 @@ export default function CalendarPage() {
       </form>
 
       {error && <p style={{ color: "salmon" }}>{error}</p>}
+      {bulkMessage && <p style={{ color: "#5eead4" }}>{bulkMessage}</p>}
 
       {schedule && (
         <>
@@ -182,7 +297,169 @@ export default function CalendarPage() {
             </button>
           </div>
 
-          <table border={1} cellPadding={4} style={{ marginTop: 12, width: "100%" }}>
+          {/* Who's on this schedule + bulk reassign + per-person remove */}
+          {scheduleUsage.length > 0 && (
+            <section className="card" style={{ marginTop: 16 }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 8,
+                }}
+              >
+                <h3>Who&apos;s on this schedule?</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowUsage((v) => !v)}
+                  className="secondary-button"
+                >
+                  {showUsage ? "Hide" : "Show"}
+                </button>
+              </div>
+
+              {showUsage && (
+                <>
+                  <table
+                    style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      marginBottom: 12,
+                    }}
+                  >
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: "left" }}>Person</th>
+                        <th style={{ textAlign: "right" }}>Primary slots</th>
+                        <th style={{ textAlign: "right" }}>Secondary slots</th>
+                        <th style={{ textAlign: "right" }}>Total</th>
+                        <th style={{ textAlign: "right" }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {scheduleUsage.map((u) => (
+                        <tr key={u.personId}>
+                          <td>{u.name}</td>
+                          <td style={{ textAlign: "right" }}>{u.primary}</td>
+                          <td style={{ textAlign: "right" }}>{u.secondary}</td>
+                          <td style={{ textAlign: "right" }}>{u.total}</td>
+                          <td
+                            style={{
+                              textAlign: "right",
+                              display: "flex",
+                              gap: 8,
+                              justifyContent: "flex-end",
+                            }}
+                          >
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => setBulkFromId(u.personId)}
+                            >
+                              Use as &quot;From&quot;
+                            </button>
+                            <button
+                              type="button"
+                              className="danger-button"
+                              onClick={() =>
+                                handleRemovePersonFromSchedule(u.personId)
+                              }
+                            >
+                              Remove from schedule
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  <form
+                    onSubmit={handleBulkReassign}
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 8,
+                      alignItems: "center",
+                    }}
+                  >
+                    <span>Bulk reassign slots:</span>
+
+                    <select
+                      value={bulkFromId}
+                      onChange={(e) =>
+                        setBulkFromId(
+                          e.target.value ? Number(e.target.value) : ""
+                        )
+                      }
+                    >
+                      <option value="">
+                        From person (currently on this schedule)
+                      </option>
+                      {scheduleUsage.map((u) => (
+                        <option key={u.personId} value={u.personId}>
+                          {u.name}
+                        </option>
+                      ))}
+                    </select>
+
+                    <span>→</span>
+
+                    <select
+                      value={bulkToId}
+                      onChange={(e) =>
+                        setBulkToId(
+                          e.target.value ? Number(e.target.value) : ""
+                        )
+                      }
+                    >
+                      <option value="">To person (any active person)</option>
+                      {people.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} (id {p.id})
+                        </option>
+                      ))}
+                    </select>
+
+                    <select
+                      value={bulkScope}
+                      onChange={(e) =>
+                        setBulkScope(e.target.value as BulkScope)
+                      }
+                    >
+                      <option value="both">Primary + Secondary</option>
+                      <option value="primary">Primary only</option>
+                      <option value="secondary">Secondary only</option>
+                    </select>
+
+                    <button
+                      type="submit"
+                      disabled={
+                        bulkLoading ||
+                        bulkFromId === "" ||
+                        bulkToId === "" ||
+                        bulkFromId === bulkToId
+                      }
+                    >
+                      {bulkLoading ? "Reassigning..." : "Reassign Slots"}
+                    </button>
+                  </form>
+                  <p style={{ marginTop: 4, fontSize: 12, opacity: 0.8 }}>
+                    Tip: use this when someone is leaving the team – reassign
+                    all of their weeks here, then you can safely remove them
+                    from the team or delete their account. If you really want
+                    them off this schedule entirely, use “Remove from schedule”.
+                  </p>
+                </>
+              )}
+            </section>
+          )}
+
+          {/* Raw schedule table */}
+          <table
+            border={1}
+            cellPadding={4}
+            style={{ marginTop: 16, width: "100%" }}
+          >
             <thead>
               <tr>
                 <th>Slot</th>

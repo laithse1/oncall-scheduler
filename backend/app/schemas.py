@@ -1,7 +1,8 @@
 
 from datetime import date, datetime
-from typing import List, Optional
 from pydantic import BaseModel, Field
+from typing import List, Optional, Literal
+
 
 # ----- Person -----
 class PersonCreate(BaseModel):
@@ -104,11 +105,23 @@ class OnCallNowResponse(BaseModel):
 
 class PersonUsage(BaseModel):
     person_id: int
+    name: str
     pto_count: int
     primary_slots: int
     secondary_slots: int
+    total_slots: int
 
-    @property
-    def total_slots(self) -> int:
-        return self.primary_slots + self.secondary_slots
+
+class SchedulePersonUsage(BaseModel):
+    schedule_id: int
+    team_id: int
+    year: int
+    people: List[PersonUsage]
+
+
+
+class BulkReassignRequest(BaseModel):
+    from_person_id: int
+    to_person_id: int
+    scope: Literal["primary", "secondary", "both"] = "both"
 

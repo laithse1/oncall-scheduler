@@ -15,6 +15,8 @@ from .schemas import (
 )
 from .scheduler import generate_oncall_slots
 
+from app.schemas import BulkReassignRequest
+
 # ----- People -----
 class PeopleRepositoryDB:
     def __init__(self, db: Session):
@@ -470,4 +472,106 @@ class SchedulesRepositoryDB:
             .first()
         )
 
+    def person_usage(self, schedule_id: int, person_id: int) -> dict:
+        q_primary = (
+            self.db.query(OnCallSlot)
+            .filter(
+                OnCallSlot.schedule_id == schedule_id,
+                OnCallSlot.primary_person_id == person_id,
+            )
+            .order_by(OnCallSlot.slot)
+        )
+        q_secondary = (
+            self.db.query(OnCallSlot)
+            .filter(
+                OnCallSlot.schedule_id == schedule_id,
+                OnCallSlot.secondary_person_id == person_id,
+            )
+            .order_by(OnCallSlot.slot)
+        )
+
+        primary_slots = q_primary.all()
+        secondary_slots = q_secondary.all()
+
+        return {
+            "schedule_id": schedule_id,
+            "person_id": person_id,
+            "primary_slots": [s.slot for s in primary_slots],
+            "secondary_slots": [s.slot for s in secondary_slots],
+        }
     
+
+    def bulk_reassign(self, schedule_id: int, body: BulkReassignRequest) -> None:
+        """
+        Reassign all slots in a schedule from one person to another.
+
+        scope:
+          - 'primary'   → only primary_person_id
+          - 'secondary' → only secondary_person_id
+          - 'both'      → both columns
+        """
+        q = self.db.query(OnCallSlot).filter(OnCallSlot.schedule_id == schedule_id)
+
+        if body.scope in ("primary", "both"):
+            (
+                q.filter(OnCallSlot.primary_person_id == body.from_person_id)
+                .update(
+                    {OnCallSlot.primary_person_id: body.to_person_id},
+                    synchronize_session=False,
+                )
+            )
+
+        if body.scope in ("secondary", "both"):
+            (
+                q.filter(OnCallSlot.secondary_person_id == body.from_person_id)
+                .update(
+                    {OnCallSlot.secondary_person_id: body.to_person_id},
+                    synchronize_session=False,
+                )
+            )
+
+        self.db.commit()
+
+
+    def remove_person(self, schedule_id: int, person_id: int) -> None:
+        """
+        Hard-remove a person from all slots in a schedule.
+
+        - If they are primary:
+            * If there's a secondary -> promote secondary to primary, clear secondary.
+            * If there's no secondary -> delete the slot.
+        - If they are secondary only:
+            * Clear secondary.
+        """
+        slots = (
+            self.db.query(OnCallSlot)
+            .filter(OnCallSlot.schedule_id == schedule_id)
+            .filter(
+                or_(
+                    OnCallSlot.primary_person_id == person_id,
+                    OnCallSlot.secondary_person_id == person_id,
+                )
+            )
+            .all()
+        )
+
+        for slot in slots:
+            # Case 1: person is primary
+            if slot.primary_person_id == person_id:
+                if slot.secondary_person_id is not None:
+                    # Promote secondary to primary
+                    slot.primary_person_id = slot.secondary_person_id
+                    slot.secondary_person_id = None
+                    # keep slot
+                else:
+                    # No secondary → delete the slot entirely
+                    self.db.delete(slot)
+                    # don't touch it further in this loop
+                    continue
+
+            # Case 2: person is secondary (could be both primary+secondary, but
+            # the primary case above is handled first)
+            if slot.secondary_person_id == person_id:
+                slot.secondary_person_id = None
+
+        self.db.commit()
